@@ -5,18 +5,27 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from torch import nn
 
+#boxes wurde von mir hinzugefügt
+from boxes import *
+
+from coordinates import *
+import time
+
 from detectron2.config import configurable
 from detectron2.data.detection_utils import convert_image_to_rgb
 from detectron2.layers import move_device_like
-from detectron2.structures import ImageList, Instances
+from detectron2.structures import ImageList, Instances, Boxes
 from detectron2.utils.events import get_event_storage
 from detectron2.utils.logger import log_first_n
+
+
 
 from ..backbone import Backbone, build_backbone
 from ..postprocessing import detector_postprocess
 from ..proposal_generator import build_proposal_generator
 from ..roi_heads import build_roi_heads
 from .build import META_ARCH_REGISTRY
+
 
 __all__ = ["GeneralizedRCNN", "ProposalNetwork"]
 
@@ -179,7 +188,7 @@ class GeneralizedRCNN(nn.Module):
         self,
         batched_inputs: List[Dict[str, torch.Tensor]],
         detected_instances: Optional[List[Instances]] = None,
-        do_postprocess: bool = True,
+        do_postprocess: bool = True
     ):
         """
         Run inference on the given inputs.
@@ -199,25 +208,129 @@ class GeneralizedRCNN(nn.Module):
             Otherwise, a list[Instances] containing raw network outputs.
         """
         assert not self.training
-
+        start_time=time.time()
         images = self.preprocess_image(batched_inputs)
+        
+        #print("Right RCNN")
+        
         features = self.backbone(images.tensor)
+        image=images[0]
+        groeße=image.size()
+        #print(groeße)
+        groeße=[groeße[1],groeße[2]]
+        
+        #print(groeße)
+        
+        #print(coordinates.imageSizeBefore)
+        
+        ratio1=groeße[0]/coordinates.imageSizeBefore[0] #verhältnis der y-Achse
+        ratio2=groeße[1]/coordinates.imageSizeBefore[1] #verhältnis der x-Achse
+        
+        #print(str(ratio1)+" "+str(ratio2))
+        
+        #ratio=[ratio1,ratio2,ratio1,ratio2]
+        #print(groeße)
+        koord=torch.tensor(coordinates.coor)
+        #print(koord)
+        #koord[0]=koord[0]*ratio1
+        #print(len(koord))
+        probabilityTest=[]
+        for i in range(len(koord)):
+            koord[i][0]=koord[i][0]*ratio2
+            koord[i][1]=koord[i][1]*ratio1
+            koord[i][2]=koord[i][2]*ratio2
+            koord[i][3]=koord[i][3]*ratio1
+            probabilityTest.append(10.0)
+        #print(koord)
+        testBoundingBox=Boxes(koord)
+        probabilityTest=torch.tensor(probabilityTest)
+        #print(propabilityTest)
+        testBoundingBox.to("cuda")
+        probabilityTest.to("cuda")
+        test=Instances(groeße)
+        test.to("cuda")
+        test.__setattr__("proposal_boxes", testBoundingBox) 
+        test.__setattr__("objectness_logits", probabilityTest)
 
+        proposals=[test]
+        proposals = [tensor.to("cuda") for tensor in proposals]
+        #print (proposals)
+        results, _ = self.roi_heads(images, features, proposals, None)
+        #print(results)
+        """
+        #koord=torch.tensor([[coordinates.coor_x_min,coordinates.coor_y_min,coordinates.coor_x_max,coordinates.coor_y_max]])
+        image=images[0]
+        groeße=image.size()
+        groeße=[groeße[1],groeße[2]]
+        print(groeße)
+        boundingBox=Boxes(koord)
+        propability=torch.tensor([1.1060e+01])
+        test=Instances(groeße)
+        test.__setattr__("proposal_boxes", boundingBox) 
+        test.__setattr__("objectness_logits", propability)
+        proposals=[test]
+        results, _ = self.roi_heads(images, features, proposals, None)
+        
         if detected_instances is None:
             if self.proposal_generator is not None:
                 proposals, _ = self.proposal_generator(images, features, None)
+                print("test2")
+                #test Proposal für das Bild mensch.jpeg 
+                #koord=torch.tensor([[261.1119,245.1264,585.5193,675.5699]])
+                #print (f"Demensionen{koord.dim()}")
+                #boundingBox=Boxes(koord)
+                #print(boundingBox)
+                #groeße=[773,1333]
+                #propability=torch.tensor([1.1060e+01])
+                #test=Instances(groeße)
+                #test.__setattr__("proposal_boxes", boundingBox) 
+                #test.__setattr__("objectness_logits", propability) 
+                
+                #Ausgabe der Proposals
+                
+                
+                #proposals=[test]
+                #print(test)
+                
+                #print(proposals)
+                #Ende eingedügt
             else:
                 assert "proposals" in batched_inputs[0]
                 proposals = [x["proposals"].to(self.device) for x in batched_inputs]
-
+                #proposals=[Instances(num_instances=1,image_height=171,image_width=295,fields=[proposal_boxes:Boxes(tensor([[55,54,139,159]])),objectness_logits:tensor([1.0])])]
+                #test Proposal für das Bild mensch.jpeg 
+                #koord=torch.tensor([[261.1119,245.1264,585.5193,675.5699]])
+                #print (f"Demensionen{koord.dim()}")
+                #boundingBox=Boxes(koord)
+                #print(boundingBox)
+                #groeße=[773,1333]
+                #propability=torch.tensor([1.1060e+01])
+                #test=Instances(groeße)
+                #test.__setattr__("proposal_boxes", boundingBox) 
+                #test.__setattr__("objectness_logits", propability) 
+                
+                #Ausgabe der Proposals
+                
+                
+                #proposals=[test]
+                #print(test)
+                
+                
+               
+                #Ende eingefügt
+            print(proposals)
+            
             results, _ = self.roi_heads(images, features, proposals, None)
         else:
             detected_instances = [x.to(self.device) for x in detected_instances]
             results = self.roi_heads.forward_with_given_boxes(features, detected_instances)
-
+        """
+        end_time=time.time()
+        print(f"Time spent in the class RCNN {end_time-start_time}")
         if do_postprocess:
             assert not torch.jit.is_scripting(), "Scripting is not supported for postprocess."
             return GeneralizedRCNN._postprocess(results, batched_inputs, images.image_sizes)
+        
         return results
 
     def preprocess_image(self, batched_inputs: List[Dict[str, torch.Tensor]]):
